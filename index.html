@@ -308,7 +308,7 @@
       <li><a href="#capabilities">Agent capabilities: tools, skills, memory</a></li>
       <li><a href="#system-architecture">System architecture</a></li>
       <li><a href="#control-plane">The control plane</a></li>
-      <li><a href="#agent-loop">The agent loop, sessions &amp; events</a></li>
+      <li><a href="#agent-loop">The agent loop &amp; loop engineering</a></li>
       <li><a href="#execution-layer">The execution layer</a></li>
       <li><a href="#tools-processing">Tools, processing &amp; permissions</a></li>
       <li><a href="#provider-adapter">The provider adapter</a></li>
@@ -349,7 +349,7 @@
     </div>
 
     <div class="callout">
-      <strong>Two decisions to make before building any of this.</strong> First, <em>does the task even need an agent?</em> There's a ladder: a single model call for well-specified tasks (classify, extract, summarize), a code-orchestrated <em>workflow</em> for multi-step pipelines whose control flow you can write, and a model-driven <em>agent</em> only when the trajectory can't be specified in advance. Second, <em>build or buy?</em> You can run the agent loop and host the tool sandbox yourself — the self-hosted build this document describes — or let a managed service run the loop and host a per-session container (e.g. Anthropic's <strong>Managed Agents</strong>). <a href="#stack">§14</a> covers when the hosted path is the better call.
+      <strong>One thing to settle before building any of this:</strong> <em>does a given task even need an agent?</em> There's a ladder — a single model call for well-specified tasks (classify, extract, summarize), a code-orchestrated <em>workflow</em> for multi-step pipelines whose control flow you can write, and a model-driven <em>agent</em> only when the trajectory can't be specified in advance. Reach for the full agent setup below only when the work genuinely can't be scripted ahead of time; everything else is cheaper and more reliable a rung down.
     </div>
   </section>
 
@@ -491,7 +491,7 @@
   </section>
 
   <section id="agent-loop">
-    <h2><span class="num">06</span>The agent loop, sessions &amp; events</h2>
+    <h2><span class="num">06</span>The agent loop &amp; loop engineering</h2>
     <p>An agent run is a loop, not a single call: <em>gather context → take an action → observe the result → repeat</em>, until the model decides it's done. A worker drives that loop — it calls the model, and when the model asks for a tool, the worker runs it (in the session's container) and feeds the result back as the next turn. The loop ends when the model returns a final answer instead of a tool call.</p>
     <p>A session exposes that loop as an <strong>event stream</strong>. Rather than returning one blob at the end, the worker emits typed events as they happen — model text, thinking, each tool call and its result, and status transitions — which the dashboard streams live and the trace store persists. This is why session monitoring is a view over <code>session_events</code> rather than a single response column.</p>
     <p>The session's <strong>status</strong> and <strong>stop reason</strong> are what callers branch on:</p>
@@ -504,6 +504,16 @@
     <div class="callout">
       <strong>Idle is not the same as done.</strong> A session goes idle every time it needs something from the outside — a tool confirmation, a custom-tool result, the next user message. Treating every idle as "finished" is the most common way to build a broken agent client: check the stop reason, and only stop when it's terminal (<code>end_turn</code>, <code>failed</code>) rather than a <code>requires_action</code> pause that's waiting on you.
     </div>
+
+    <h3>Loop engineering</h3>
+    <p>The loop isn't fixed plumbing — it's the part of an agent you tune the most, and the thing that most decides whether an agent is reliable or flaky. <em>Loop engineering</em> is the discipline of designing each pass: what the agent sees on a turn, how it checks its own work, and when it's allowed to stop. The levers that matter:</p>
+    <ul>
+      <li><strong>Context per turn</strong> — feed the agent what's relevant <em>now</em>, not the entire history. Too little and it forgets the goal; too much and it gets slow, expensive, and distracted. Recall, compaction, and context editing (<a href="#memory-context">§10</a>) all feed this decision.</li>
+      <li><strong>Verification</strong> — give the agent a way to check its own output before it calls the work done: run the tests, re-read the file it just edited, compare the result against the goal. An agent that never verifies confidently ships wrong answers.</li>
+      <li><strong>Stopping conditions</strong> — define what "done" looks like and cap the loop, so a confused agent doesn't spin forever burning tokens. A per-run timeout and a max-turns limit are the cheap backstops.</li>
+      <li><strong>Error recovery</strong> — when a tool fails, hand the error back to the model as the next turn instead of crashing the run. The model usually adjusts and retries; the queue (<a href="#execution-layer">§07</a>) absorbs the failures it can't.</li>
+    </ul>
+    <p>None of this changes the data model — it's behavior that lives in the worker. But it's where most of the effort goes once the platform itself works, which is exactly why the worker is a package you can test in isolation rather than logic buried in the API.</p>
   </section>
 
   <section id="execution-layer">
@@ -640,10 +650,6 @@
     <div class="part-label">Part four — implementation</div>
     <h2><span class="num">14</span>Technology stack</h2>
     <p class="lede">Matched to: internal tool, multi-provider, ship without overengineering.</p>
-
-    <div class="callout">
-      <strong>Build vs. buy the execution layer.</strong> Before standing up the queue, workers, and sandbox, weigh a hosted option — <strong>Anthropic's Managed Agents</strong> runs the agent loop and hosts a per-session container for you, so you'd only build the control plane and dashboard. The self-hosted build below is the right call when you need your own compute, a custom tool runtime, multi-provider routing, or data residency; the hosted path is the right call when you want to skip the entire teal column and ship sooner. The data model and concepts in this document apply either way.
-    </div>
 
     <table class="stack-table">
       <tr><th>Layer</th><th>Choice</th><th>Why</th></tr>
