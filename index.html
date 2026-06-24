@@ -304,14 +304,15 @@
     <h2>Contents</h2>
     <ol>
       <li><a href="#overview">Overview &amp; goals</a></li>
-      <li><a href="#core-concepts">Core concepts: agent, session, deployment</a></li>
+      <li><a href="#core-concepts">Core concepts</a></li>
       <li><a href="#capabilities">Agent capabilities: tools, skills, memory</a></li>
       <li><a href="#system-architecture">System architecture</a></li>
       <li><a href="#control-plane">The control plane</a></li>
+      <li><a href="#agent-loop">The agent loop, sessions &amp; events</a></li>
       <li><a href="#execution-layer">The execution layer</a></li>
-      <li><a href="#tools-processing">Tools &amp; processing</a></li>
+      <li><a href="#tools-processing">Tools, processing &amp; permissions</a></li>
       <li><a href="#provider-adapter">The provider adapter</a></li>
-      <li><a href="#memory-dreaming">Memory &amp; dreaming</a></li>
+      <li><a href="#memory-context">Context &amp; memory</a></li>
       <li><a href="#data-layer">The data layer</a></li>
       <li><a href="#data-model">Data model &amp; schema</a></li>
       <li><a href="#scaling">Scaling notes</a></li>
@@ -346,20 +347,30 @@
         <p>Agents act through tools, load reusable skills, and carry memory across sessions — consolidated by a background dreaming process.</p>
       </div>
     </div>
+
+    <div class="callout">
+      <strong>Two decisions to make before building any of this.</strong> First, <em>does the task even need an agent?</em> There's a ladder: a single model call for well-specified tasks (classify, extract, summarize), a code-orchestrated <em>workflow</em> for multi-step pipelines whose control flow you can write, and a model-driven <em>agent</em> only when the trajectory can't be specified in advance. Second, <em>build or buy?</em> You can run the agent loop and host the tool sandbox yourself — the self-hosted build this document describes — or let a managed service run the loop and host a per-session container (e.g. Anthropic's <strong>Managed Agents</strong>). <a href="#stack">§14</a> covers when the hosted path is the better call.
+    </div>
   </section>
 
   <section id="core-concepts">
     <h2><span class="num">02</span>Core concepts</h2>
-    <p>Four entities form the backbone of the system. Understanding how they relate is the key to everything that follows.</p>
+    <p>Six entities form the backbone of the system. Understanding how they relate is the key to everything that follows.</p>
 
     <h3>Agent</h3>
-    <p>The definition or template. Holds a name, system prompt, model configuration (provider, model string, temperature, max tokens), and bindings to tools, skills, and memory scope. Agents themselves never change — they exist only as an identity that versions attach to.</p>
+    <p>The definition or template. Holds a name, system prompt, model configuration (provider, model string, effort/thinking, max tokens), and bindings to tools, skills, and memory scope. Agents themselves never change — they exist only as an identity that versions attach to.</p>
 
     <h3>Agent version</h3>
     <p>Every edit to an agent's configuration creates a new immutable version rather than overwriting the existing one. Versions are append-only: once a version has been used by any session or deployment, it is never modified. This is the single most important design decision in the system — it means a config change can never silently alter the behavior of something already running in production.</p>
 
     <h3>Session</h3>
-    <p>A runtime instance of an agent version handling one conversation or task. Holds status (active, idle, completed, failed), full message/event history, token usage, and cost. This is the unit of observability — almost everything in the monitoring UI is a view over sessions. It is also the raw material memory is later distilled from.</p>
+    <p>A runtime instance of an agent version handling one conversation or task. A session is an <em>event stream</em>, not just stored text: it moves through a lifecycle — <code>running</code> ↔ <code>idle</code> → <code>completed</code>/<code>failed</code> — and emits typed events as it goes (model messages, thinking, tool calls and their results, status transitions). When it pauses it carries a <strong>stop reason</strong> (<code>end_turn</code> for done, <code>tool_use</code>/<code>requires_action</code> when it's waiting on a tool result or a human approval, <code>refusal</code>, <code>max_tokens</code>) that tells the caller what to do next. This is the unit of observability, and the raw material memory is later distilled from. The persisted form of that stream is the <code>session_events</code> table (<a href="#data-model">§12</a>).</p>
+
+    <h3>Environment</h3>
+    <p>A reusable template for the sandbox an agent's tools run in: the networking policy (open egress vs. a host allowlist), preinstalled packages, and resource limits. Environments are kept separate from agents on purpose — one environment ("data analysis, no network") can back many agents, and you can change the sandbox without touching agent config. A session names both an agent version <em>and</em> an environment.</p>
+
+    <h3>Container</h3>
+    <p>The actual isolated compute instance a session gets, provisioned from its environment. This is where tools execute — bash, file edits, code — <em>not</em> where the model loop runs. Keeping the model loop and the tool sandbox apart is the core safety boundary: the model decides, the container acts, and a misbehaving tool can't reach beyond its own container.</p>
 
     <h3>Deployment</h3>
     <p>Binds a specific agent version to an environment (dev, staging, prod) and exposes it as a stable, callable endpoint. Because deployments pin to a version rather than to "the agent" in general, promoting a new version or rolling back is just repointing one foreign key.</p>
@@ -374,13 +385,13 @@
     <p class="lede">An agent is more than a prompt and a model. Four capabilities turn a model call into an agent that acts, specializes, and improves over time: the tools it can act with, the skills it can load, the memory it carries, and the dreaming that forms that memory.</p>
 
     <h3>Tools — what an agent can <em>do</em></h3>
-    <p>A tool is a typed contract: a name, an input schema, and a handler that lets the model act on the world — query a database, call an API, run code, hit an MCP server. Tools are registered once and bound to agent versions, so the same <code>search_docs</code> tool can back many agents without being redefined for each.</p>
+    <p>A tool is a typed contract — a name, an input schema, and a handler — that lets the model act on the world. Tools come in three shapes: <em>functions you host</em> (your code answers the call), <em>server tools</em> the model runs directly (code execution, web search), and <em>MCP servers</em> — a standard protocol (the Model Context Protocol) for exposing third-party capabilities like GitHub or a database. Tools are registered once and bound to agent versions, so one <code>search_docs</code> tool can back many agents. Whether a given tool runs automatically or pauses for human approval is a per-tool <em>permission policy</em> — see <a href="#tools-processing">§08</a>.</p>
 
     <h3>Skills — what an agent <em>knows how to do</em></h3>
-    <p>A skill is a packaged, reusable capability: a bundle of instructions — and optionally the tools and resources that go with them — that teaches an agent a specific kind of task ("triage a support ticket", "generate an invoice", "run a deep-research pass"). Skills are versioned and append-only exactly like agents, composable (one agent loads many), and shareable across agents, so a capability is authored once instead of copy-pasted into every system prompt.</p>
+    <p>A skill is a packaged, reusable capability: a bundle of instructions — and optionally the tools and resources that go with them — that teaches an agent a specific kind of task ("triage a support ticket", "generate an invoice"). Concretely it's a folder with a manifest (a <code>SKILL.md</code>) whose short description stays in context by default; the agent loads the full instructions only when the task calls for it. That <em>progressive disclosure</em> is the point — an agent can have many skills available without paying for all of them in every prompt. Skills are versioned and append-only like agents, and shareable across agents, so a capability is authored once instead of copy-pasted into every system prompt.</p>
 
     <h3>Memory — what an agent <em>remembers</em></h3>
-    <p>Sessions are ephemeral; memory is what survives them. Two kinds: <em>episodic</em> — distilled records of what happened in past sessions (decisions, outcomes) — and <em>semantic</em> — durable facts the agent has learned (a user's preferences, a project's constraints). Memory is scoped (per agent, per user, or per team) and recalled by relevance at the start of and during a session, so an agent walks in already knowing what it learned last time.</p>
+    <p>Sessions are ephemeral; memory is what survives them. Two kinds: <em>episodic</em> — distilled records of what happened in past sessions (decisions, outcomes) — and <em>semantic</em> — durable facts the agent has learned (a user's preferences, a project's constraints). Memory is scoped (per agent, per user, or per team) and recalled by relevance at the start of and during a session, so an agent walks in already knowing what it learned last time. This is distinct from managing the context window <em>within</em> one session — see <a href="#memory-context">§10</a>.</p>
 
     <h3>Dreaming — how memory is <em>formed</em></h3>
     <p>Raw session history is not memory. Saving every event is hoarding; saving nothing means the agent never learns. Dreaming is the offline process in between: while an agent is idle, a background job replays recent sessions and reflects — extract what's worth keeping, merge what duplicates an existing memory, prune what's gone stale. The name is deliberate. Like sleep consolidation, it's the step where experience becomes knowledge, and it's what keeps the memory store curated rather than either empty or unbounded.</p>
@@ -415,7 +426,7 @@
         <div class="tier-label">Control plane — stateless, horizontally scaled</div>
         <div class="tier-row">
           <div class="box purple"><div class="bt">Agent service</div><div class="bs">definitions, versions</div></div>
-          <div class="box purple"><div class="bt">Session service</div><div class="bs">runtime, history</div></div>
+          <div class="box purple"><div class="bt">Session service</div><div class="bs">lifecycle, event stream</div></div>
           <div class="box purple"><div class="bt">Deploy service</div><div class="bs">environments, endpoints</div></div>
           <div class="box purple"><div class="bt">Auth / RBAC</div><div class="bs">team scoping</div></div>
         </div>
@@ -423,10 +434,7 @@
           <div class="box purple"><div class="bt">Tool registry</div><div class="bs">typed tool catalog</div></div>
           <div class="box purple"><div class="bt">Skills registry</div><div class="bs">skill defs, versions</div></div>
           <div class="box purple"><div class="bt">Memory service</div><div class="bs">recall, scoping</div></div>
-        </div>
-        <div class="tier-row" style="margin-top:10px">
-          <div class="box purple"><div class="bt">Secrets / vault</div><div class="bs">encrypted provider keys</div></div>
-          <div class="box purple"><div class="bt">Observability</div><div class="bs">traces, metrics, cost</div></div>
+          <div class="box purple"><div class="bt">Vault</div><div class="bs">credentials, egress inject</div></div>
         </div>
       </div>
       <div class="arrow-down">↓</div>
@@ -438,8 +446,7 @@
           <div class="box teal"><div class="bt">Provider adapter</div><div class="bs">unified LLM interface</div></div>
         </div>
         <div class="tier-row" style="margin-top:10px">
-          <div class="box teal"><div class="bt">Tool runtime / sandbox</div><div class="bs">runs tool handlers safely</div></div>
-          <div class="box teal"><div class="bt">MCP gateway</div><div class="bs">routes MCP calls</div></div>
+          <div class="box teal" style="flex:1 1 100%"><div class="bt">Container / sandbox</div><div class="bs">per-session, provisioned from an environment — tool runtime + MCP gateway execute here</div></div>
         </div>
         <div class="tier-row" style="margin-top:10px">
           <div class="box amber" style="flex:1 1 100%"><div class="bt">Anthropic · OpenAI · Google · self-hosted</div><div class="bs">external model providers</div></div>
@@ -464,48 +471,70 @@
       </div>
     </div>
 
-    <p>Requests enter through the gateway, which handles authentication and rate limiting before reaching the control plane. The control plane manages everything except the actual model calls and tool execution — those are handed off to the execution layer, which runs asynchronously against a queue. Memory recall happens synchronously in the control plane on the read path; memory <em>formation</em> happens off to the side in the scheduled dreaming worker. This separation is the architectural decision that does the most work: it means heavy, slow agent runs — and slow consolidation passes — never block the fast API surface the dashboard depends on.</p>
+    <p>Requests enter through the gateway, which handles authentication and rate limiting before reaching the control plane. The control plane manages everything except the actual model calls and tool execution — those are handed off to the execution layer, which runs asynchronously against a queue, with each session's tools executing in its own container. Memory recall happens synchronously in the control plane; memory <em>formation</em> happens off to the side in the scheduled dreaming worker. This separation is the architectural decision that does the most work: heavy, slow agent runs — and slow consolidation passes — never block the fast API surface the dashboard depends on.</p>
   </section>
 
   <section id="control-plane">
     <h2><span class="num">05</span>The control plane</h2>
-    <p>The control plane is a set of stateless services — agent, session, deploy, auth, and the tool/skills/memory registries — that hold no in-memory state between requests. Everything persists to Postgres or the cache immediately. This is what makes scaling trivial: when traffic grows, you add replicas behind the gateway. No sticky sessions, no coordination between instances.</p>
+    <p>The control plane is a set of stateless services — agent, session, deploy, auth, the tool/skills/memory registries, and the vault — that hold no in-memory state between requests. Everything persists to Postgres or the cache immediately. This is what makes scaling trivial: when traffic grows, you add replicas behind the gateway. No sticky sessions, no coordination between instances.</p>
     <ul>
       <li><strong>Agent service</strong> — CRUD for agent definitions and versions. Enforces the append-only versioning rule.</li>
-      <li><strong>Session service</strong> — creates sessions, serves session history and live status to the dashboard.</li>
+      <li><strong>Session service</strong> — creates sessions, tracks their lifecycle, and serves the event stream and live status to the dashboard.</li>
       <li><strong>Deploy service</strong> — promotes an agent version to an environment, manages the stable endpoint mapping.</li>
       <li><strong>Tool registry</strong> — the catalog of available tools and their input schemas; supplies the worker with the set of callable tools for an agent version.</li>
       <li><strong>Skills registry</strong> — stores skill definitions and versions, resolves which skill versions an agent version loads.</li>
       <li><strong>Memory service</strong> — recall on the read path: retrieves the most relevant memories for a scope and serves them to the worker at session start.</li>
+      <li><strong>Vault</strong> — stores tool and provider credentials and injects them at egress, so secrets never enter a container (<a href="#tools-processing">§08</a>).</li>
       <li><strong>Auth / RBAC</strong> — team membership and role scoping (who can edit vs. only view).</li>
-      <li><strong>Secrets / vault</strong> — encrypted storage and retrieval of provider API keys.</li>
       <li><strong>Observability</strong> — ingests traces, metrics, and per-session cost data for the monitoring views.</li>
     </ul>
   </section>
 
+  <section id="agent-loop">
+    <h2><span class="num">06</span>The agent loop, sessions &amp; events</h2>
+    <p>An agent run is a loop, not a single call: <em>gather context → take an action → observe the result → repeat</em>, until the model decides it's done. A worker drives that loop — it calls the model, and when the model asks for a tool, the worker runs it (in the session's container) and feeds the result back as the next turn. The loop ends when the model returns a final answer instead of a tool call.</p>
+    <p>A session exposes that loop as an <strong>event stream</strong>. Rather than returning one blob at the end, the worker emits typed events as they happen — model text, thinking, each tool call and its result, and status transitions — which the dashboard streams live and the trace store persists. This is why session monitoring is a view over <code>session_events</code> rather than a single response column.</p>
+    <p>The session's <strong>status</strong> and <strong>stop reason</strong> are what callers branch on:</p>
+    <ul>
+      <li><code>running</code> — the worker is actively driving the loop.</li>
+      <li><code>idle</code> + <code>end_turn</code> — the agent finished and is awaiting the next message.</li>
+      <li><code>idle</code> + <code>requires_action</code> — the loop is blocked on something only the caller can provide: a custom tool result, or a human approval for a gated tool. The caller responds, and the loop resumes.</li>
+      <li><code>failed</code> / <code>refusal</code> — terminal; surface it rather than retrying blindly.</li>
+    </ul>
+    <div class="callout">
+      <strong>Idle is not the same as done.</strong> A session goes idle every time it needs something from the outside — a tool confirmation, a custom-tool result, the next user message. Treating every idle as "finished" is the most common way to build a broken agent client: check the stop reason, and only stop when it's terminal (<code>end_turn</code>, <code>failed</code>) rather than a <code>requires_action</code> pause that's waiting on you.
+    </div>
+  </section>
+
   <section id="execution-layer">
-    <h2><span class="num">06</span>The execution layer</h2>
-    <p>Agent runs — the loop of calling a model, executing a tool, calling the model again — happen in a separate worker pool fed by a queue, deliberately apart from the API servers.</p>
+    <h2><span class="num">07</span>The execution layer</h2>
+    <p>The agent loop (<a href="#agent-loop">§06</a>) runs in a separate worker pool fed by a queue, deliberately apart from the API servers.</p>
     <p>This separation matters because agent runs are slow and bursty: a single run can take minutes and involve many model calls, while API requests need to return in milliseconds. Running both in the same process means one heavy agent run starves the dashboard. Splitting them lets the worker pool scale against queue depth, independent of API traffic.</p>
-    <p>The queue also provides durability for free. If a worker crashes mid-run, the task returns to the queue and another worker picks it up. For a multi-provider system this matters doubly, since provider rate limits and outages are routine — the queue absorbs them instead of surfacing them as user-facing failures. The same worker infrastructure runs the scheduled dreaming job (§09), so memory consolidation reuses the queue's retries and concurrency limits rather than introducing a second scheduler.</p>
+    <p>The queue also provides durability for free. If a worker crashes mid-run, the task returns to the queue and another worker picks it up. For a multi-provider system this matters doubly, since provider rate limits and outages are routine — the queue absorbs them instead of surfacing them as user-facing failures. The same worker infrastructure runs the scheduled dreaming job (<a href="#memory-context">§10</a>), so memory consolidation reuses the queue's retries and concurrency limits rather than introducing a second scheduler.</p>
   </section>
 
   <section id="tools-processing">
-    <h2><span class="num">07</span>Tools &amp; processing</h2>
-    <p>The agent worker decides to call a tool; the <em>processing</em> layer is where that call actually runs. Keep it separate from the provider adapter (§08): the adapter talks to <em>models</em>, the processing layer talks to <em>tools</em>.</p>
+    <h2><span class="num">08</span>Tools, processing &amp; permissions</h2>
+    <p>The agent worker decides to call a tool; the <em>processing</em> layer is where that call actually runs. Keep it separate from the provider adapter (<a href="#provider-adapter">§09</a>): the adapter talks to <em>models</em>, the processing layer talks to <em>tools</em>.</p>
     <ul>
       <li><strong>Tool registry</strong> — the catalog of tools and their input schemas. The worker reads it to tell the model what's callable, and validates every tool call against the schema before running it.</li>
-      <li><strong>MCP gateway</strong> — routes MCP tool calls to the right server and manages the connection and auth to each. One agent may use several MCP servers; the gateway is the single egress point, so connection handling and credentials aren't scattered across the worker.</li>
-      <li><strong>Tool runtime / sandbox</strong> — where handlers execute. Code-running tools run in a sandbox (isolated container or microVM) with no ambient credentials, per-call timeouts, and concurrency caps.</li>
+      <li><strong>MCP gateway</strong> — routes MCP tool calls to the right server. An agent <em>declares</em> the MCP servers it uses (name + URL, no credentials); the gateway is the single egress point, and the vault supplies the auth per session.</li>
+      <li><strong>Container / sandbox</strong> — where handlers execute. Code-running tools run in the session's container with no ambient credentials, per-call timeouts, and concurrency caps.</li>
     </ul>
-    <p>Why keep this separate from the provider adapter? Symmetry. The provider adapter is one interface over many <em>models</em>; the processing layer is one interface over many <em>tools</em>. Conflating them tangles model-specific code with tool-specific code — splitting them means adding a tool never touches provider code, and adding a provider never touches tool code.</p>
+
+    <h3>Permission policies — the human-in-the-loop gate</h3>
+    <p>Every server-executed tool carries a policy: <code>always_allow</code> (the call runs automatically) or <code>always_ask</code> (the session goes idle with stop reason <code>requires_action</code> and waits for an explicit confirmation before the call runs). This is how you put a human in front of irreversible actions — a <code>send_email</code> or <code>delete_record</code> tool asks; a <code>read_file</code> doesn't. The model emits the call, the platform blocks, and the caller allows or denies — a denial can carry a reason that's handed back to the model so it can adjust.</p>
+
+    <h3>Vaults — credentials the sandbox never sees</h3>
+    <p>Tool and MCP credentials do <em>not</em> go into the container. They live in the vault, and a proxy injects them into the outbound request <em>after</em> it leaves the sandbox. So code running in the container — including anything the model itself wrote — can't read or exfiltrate a key, even under prompt injection. OAuth tokens auto-refresh; per-tool secrets are substituted at egress against an allowlist of hosts. This is a stronger guarantee than encrypting keys at rest (<a href="#data-model">§12</a>), and it's the right default for anything an agent can call.</p>
+
     <div class="callout warn">
-      <strong>Tools are the blast radius.</strong> A model call only produces text; a tool call changes state — it writes a row, sends a request, or runs code. Treat every handler as untrusted by default: sandbox code execution, scope credentials to the specific tool (never hand the agent raw provider or database keys), set timeouts, and log every call as a <code>tool_call</code>/<code>tool_result</code> event so the session trace shows exactly what the agent <em>did</em>, not just what it said.
+      <strong>Tools are the blast radius.</strong> A model call only produces text; a tool call changes state — it writes a row, sends a request, or runs code. Treat every handler as untrusted by default: run code in the sandbox, gate irreversible actions behind <code>always_ask</code>, keep credentials in the vault rather than handing the agent raw keys, set timeouts, and log every call as a <code>tool_call</code>/<code>tool_result</code> event so the session trace shows exactly what the agent <em>did</em>, not just what it said.
     </div>
   </section>
 
   <section id="provider-adapter">
-    <h2><span class="num">08</span>The provider adapter</h2>
+    <h2><span class="num">09</span>The provider adapter</h2>
     <p>Everything above this layer speaks one internal interface. Only the adapter knows that Anthropic streams differently from OpenAI, that tool-call formats differ between providers, or that token counting works differently per model family.</p>
     <pre><code>interface LLMAdapter {
   stream(messages, config) -&gt; AsyncIterator&lt;Chunk&gt;
@@ -519,47 +548,50 @@
     </div>
   </section>
 
-  <section id="memory-dreaming">
-    <h2><span class="num">09</span>Memory &amp; dreaming</h2>
-    <p>The memory subsystem has two paths that are deliberately asymmetric: recall is synchronous and on the hot path; formation is offline and scheduled.</p>
+  <section id="memory-context">
+    <h2><span class="num">10</span>Context &amp; memory</h2>
+    <p class="lede">Two different problems wear the word "memory." Within a single long session, the context window fills up. Across sessions, the agent needs to carry forward what it learned. They have different mechanisms — don't conflate them.</p>
 
-    <h3>Recall — the read path</h3>
-    <p>At session start, and optionally mid-session, the memory service retrieves the most relevant memories for the active scope (agent, user, or team) and injects them into the agent's context. Relevance is vector similarity over the memory store, weighted by recency and salience. This is a control-plane read — fast and synchronous, sitting in the hot path of starting a session — so an agent begins already knowing what it learned before.</p>
+    <h3>In-session: compaction &amp; context editing</h3>
+    <p>As a session's event history approaches the model's context-window limit, <strong>compaction</strong> summarizes the earlier turns into a compact block so the run can keep going — the summary replaces the raw history but preserves the thread. <strong>Context editing</strong> is the lighter-weight sibling: it <em>prunes</em> stale content (old tool results, completed thinking blocks) rather than summarizing, keeping the transcript lean turn over turn. Both operate inside one session, and neither persists anything beyond it. They're about keeping a single run affordable and coherent — not about learning.</p>
 
-    <h3>Formation — dreaming, the write path</h3>
-    <p>Memory is <em>not</em> written synchronously during a session. Candidate observations accumulate, and a scheduled dreaming job — a repeatable worker task, off the hot path — processes them per scope: distil episodic summaries, extract semantic facts, dedupe against existing memories by similarity, prune stale or superseded ones, and recompute salience. Running it offline keeps the session loop fast, lets consolidation use a cheaper/slower model, and lets it look across many sessions at once — the cross-session view a synchronous per-session write can never have.</p>
+    <h3>Across sessions: recall, the memory store &amp; dreaming</h3>
+    <p>Durable memory is a store the agent reads and writes <em>between</em> sessions. In some stacks this is a file-backed memory tool — the agent reads and writes a <code>/memories</code> directory that survives restarts; here it's the recall + dreaming subsystem. The read and write paths are deliberately asymmetric:</p>
+    <p><strong>Recall (read path).</strong> At session start, and optionally mid-session, the memory service retrieves the most relevant memories for the active scope (agent, user, or team) and injects them into context. Relevance is vector similarity over the memory store, weighted by recency and salience. This is a control-plane read — fast and synchronous, in the hot path of starting a session — so an agent begins already knowing what it learned before.</p>
+    <p><strong>Formation (write path) — dreaming.</strong> Memory is <em>not</em> written synchronously during a session. Candidate observations accumulate, and a scheduled dreaming job — off the hot path — processes them per scope: distil episodic summaries, extract semantic facts, dedupe against existing memories by similarity, prune stale or superseded ones, and recompute salience. Running it offline keeps the session loop fast, lets consolidation use a cheaper model, and lets it look across many sessions at once — the cross-session view a synchronous write can never have.</p>
 
     <h3>Storage</h3>
     <p>Memories live in Postgres with an embedding column (pgvector) for similarity recall. Promote to a dedicated vector store only when recall latency or index size demands it — the same "keep the boundary, migrate later" move as <code>session_events</code> → ClickHouse in the data layer.</p>
 
     <div class="callout">
-      <strong>Why dreaming is scheduled, not triggered per session.</strong> Consolidating ten sessions at once is both cheaper and better than ten separate consolidations: it can see that the same fact showed up five times (raise its salience), or that today's session contradicts last week's (supersede the old memory). A per-session write can't see the forest. Schedule it on idle — nightly, or after N new sessions — bound each run, and record it as a <code>dream_run</code> so every change to memory is auditable.
+      <strong>The two layers are complementary, not competing.</strong> Compaction and context editing keep <em>one run</em> within budget; the memory store makes the <em>next run</em> smarter. And dreaming is scheduled rather than per-session for a reason: consolidating ten sessions at once is cheaper and better than ten separate writes — it can see that the same fact showed up five times (raise its salience) or that today's session contradicts last week's (supersede the old memory). Schedule it on idle, bound each run, and record it as a <code>dream_run</code> so every change to memory is auditable.
     </div>
   </section>
 
   <section id="data-layer">
-    <h2><span class="num">10</span>The data layer</h2>
+    <h2><span class="num">11</span>The data layer</h2>
     <p>The data layer splits by access pattern, which is the detail most teams get wrong until volume forces the issue.</p>
-    <p>Entity data — agents, sessions, deployments, tools, skills — is low-volume, relational, and needs transactions: that's Postgres. Session <em>traces</em> — every message, token count, latency figure, tool call — are high-volume, append-only, and queried analytically ("cost per agent this week"). Forcing both into the same table works until trace volume swamps the database and dashboard queries slow down.</p>
+    <p>Entity data — agents, sessions, deployments, tools, skills, environments — is low-volume, relational, and needs transactions: that's Postgres. Session <em>traces</em> — every message, token count, latency figure, tool call — are high-volume, append-only, and queried analytically ("cost per agent this week"). Forcing both into the same table works until trace volume swamps the database and dashboard queries slow down.</p>
     <p>The fix is to keep traces in their own table from day one (<code>session_events</code>, see schema below) so the write pattern is already isolated, then migrate that table to a columnar store like ClickHouse — or partition it within Postgres — once volume actually demands it. You don't need ClickHouse on day one; you need the table boundary to already exist so the migration is a data move, not a redesign. Memory embeddings get the same treatment: an embedding column on <code>memories</code> in Postgres now, a dedicated vector store later, with the boundary already drawn.</p>
   </section>
 
   <section class="part-divider" id="data-model">
     <div class="part-label">Part three — data model</div>
-    <h2><span class="num">11</span>Data model &amp; schema</h2>
-    <p class="lede">Fourteen tables: the four core entities and their traces, credentials and team ownership, plus the three capability subsystems — tools, skills, and memory.</p>
+    <h2><span class="num">12</span>Data model &amp; schema</h2>
+    <p class="lede">Fifteen tables: the core entities and their traces, credentials and team ownership, plus the three capability subsystems — tools, skills, and memory.</p>
 
     <table>
       <tr><th>Table</th><th>Purpose</th><th>Key columns</th></tr>
       <tr><td>teams</td><td>Top-level ownership boundary</td><td>id, name, created_at</td></tr>
       <tr><td>agents</td><td>Identity only — name and slug, never edited</td><td>id, team_id, name, slug</td></tr>
       <tr><td>agent_versions</td><td>Immutable config snapshot per edit</td><td>id, agent_id, version_number, system_prompt, provider, model, model_params, memory_scope</td></tr>
-      <tr><td>deployments</td><td>Binds a version to an environment + endpoint</td><td>id, agent_version_id, environment, endpoint_slug, status</td></tr>
-      <tr><td>sessions</td><td>One runtime conversation/task instance</td><td>id, agent_version_id, deployment_id, status, total_tokens, cost_usd</td></tr>
-      <tr><td>session_events</td><td>Append-only trace of every message/tool call</td><td>id, session_id, event_type, payload, tokens, latency_ms</td></tr>
-      <tr><td>provider_credentials</td><td>Encrypted provider API keys, scoped to team</td><td>id, team_id, provider, encrypted_key</td></tr>
+      <tr><td>environments</td><td>Reusable sandbox template</td><td>id, team_id, name, networking_policy, packages</td></tr>
+      <tr><td>deployments</td><td>Binds a version + environment to an endpoint</td><td>id, agent_version_id, environment_id, environment, endpoint_slug, status</td></tr>
+      <tr><td>sessions</td><td>One runtime conversation/task instance</td><td>id, agent_version_id, environment_id, deployment_id, status, stop_reason, total_tokens, cost_usd</td></tr>
+      <tr><td>session_events</td><td>Append-only event stream (messages, tool calls, status)</td><td>id, session_id, event_type, payload, tokens, latency_ms</td></tr>
+      <tr><td>vault_credentials</td><td>Encrypted provider/tool secrets, injected at egress</td><td>id, team_id, kind, ref, encrypted_value</td></tr>
       <tr><td>tools</td><td>Registry of callable tools</td><td>id, team_id, name, type, input_schema, handler_ref</td></tr>
-      <tr><td>agent_version_tools</td><td>Which tools a version can call</td><td>agent_version_id, tool_id</td></tr>
+      <tr><td>agent_version_tools</td><td>Which tools a version can call, and how they're gated</td><td>agent_version_id, tool_id, permission_policy</td></tr>
       <tr><td>skills</td><td>Identity of a reusable capability</td><td>id, team_id, name, slug</td></tr>
       <tr><td>skill_versions</td><td>Immutable skill snapshot per edit</td><td>id, skill_id, version_number, instructions, tool_config, resources</td></tr>
       <tr><td>agent_version_skills</td><td>Which skill versions a version loads</td><td>agent_version_id, skill_version_id</td></tr>
@@ -570,55 +602,60 @@
     <h3>Why agents and agent_versions are split</h3>
     <p><code>agents</code> is an identity row that never changes. All real configuration lives in <code>agent_versions</code>, where every edit inserts a new row. A deployment's <code>agent_version_id</code> always points at something immutable — promoting a version is changing one foreign key, and rolling back is pointing it at the previous one.</p>
 
-    <h3>Why tools and skills bind through join tables, not JSON columns</h3>
-    <p>Tools and skills attach to an <code>agent_version</code> through <code>agent_version_tools</code> and <code>agent_version_skills</code> rather than a JSON list on the version. The join tables make the reverse query — "which agents use this tool?" or "which agents load this skill version?" — a simple index lookup, which is exactly the question you ask before changing or deprecating a shared tool. They also let a skill carry its own version lineage (<code>skills</code> → <code>skill_versions</code>) on the same append-only pattern as agents, so a session records the precise skill version it ran with.</p>
+    <h3>Why environments are their own table, not fields on the agent</h3>
+    <p>The sandbox config (networking, packages, limits) lives in <code>environments</code> rather than on <code>agent_versions</code> because it's a different axis of change with a different owner. One environment backs many agents; you tighten a network policy once instead of re-versioning every agent that uses it. A session records both <code>agent_version_id</code> and <code>environment_id</code>, so you always know which sandbox a run executed in.</p>
 
-    <h3>Why sessions carries both agent_version_id and deployment_id</h3>
-    <p>A session can originate from two paths: someone testing an agent directly in the builder (no deployment), or a deployed endpoint being invoked (has a deployment). Making <code>deployment_id</code> nullable lets one table serve both paths, so the session-monitoring view never needs a union query across two tables.</p>
+    <h3>Why tools and skills bind through join tables, with a permission policy</h3>
+    <p>Tools and skills attach to an <code>agent_version</code> through join tables rather than JSON lists. The join tables make the reverse query — "which agents use this tool?" — a simple index lookup, exactly the question you ask before changing or deprecating a shared tool. <code>agent_version_tools</code> also carries the <code>permission_policy</code> (<code>always_allow</code> / <code>always_ask</code>), so the human-in-the-loop gate for a tool is pinned to the version, not set globally.</p>
 
     <h3>Why session_events is its own table, not a JSON column on sessions</h3>
-    <p>It's tempting to add a <code>messages jsonb</code> column on <code>sessions</code> and append to it. Avoid this. Postgres rewrites the entire JSON blob on every append, which slows down as conversations grow, and a blob can't be queried at the event level — exactly the query you'll want once there's real usage ("show every failed tool call this week"). A separate table with an <code>event_type</code> column (message, tool_call, tool_result, error) keeps writes small and queryable, and is also the table to move into ClickHouse first when volume grows.</p>
+    <p>It's tempting to add a <code>messages jsonb</code> column on <code>sessions</code> and append to it. Avoid this. Postgres rewrites the entire JSON blob on every append, which slows down as conversations grow, and a blob can't be queried at the event level — exactly the query you'll want once there's real usage ("show every failed tool call this week"). A separate table with an <code>event_type</code> column (message, thinking, tool_call, tool_result, status, error) keeps writes small and queryable, and is also the table to move into ClickHouse first when volume grows.</p>
 
     <h3>Why memories carries a scope and an embedding, and dream_runs exists</h3>
-    <p><code>memories.scope_type</code> + <code>scope_id</code> let the same table serve per-agent, per-user, and per-team memory without three near-identical tables — recall filters by scope, then ranks by vector similarity over <code>embedding</code> and by <code>salience</code>/<code>last_used_at</code>. <code>dream_runs</code> is the audit trail for formation: because dreaming mutates memory (writing, merging, pruning) outside any session, you want a record of every pass — what it processed and what it changed — so a memory that suddenly disappears or shifts is traceable to the run that did it, not a mystery.</p>
+    <p><code>memories.scope_type</code> + <code>scope_id</code> let the same table serve per-agent, per-user, and per-team memory without three near-identical tables — recall filters by scope, then ranks by vector similarity over <code>embedding</code> and by <code>salience</code>/<code>last_used_at</code>. <code>dream_runs</code> is the audit trail for formation: because dreaming mutates memory outside any session, you want a record of every pass — what it processed and what it changed — so a memory that suddenly disappears or shifts is traceable to the run that did it.</p>
 
-    <h3>Why provider_credentials stores encrypted_key, never a raw key</h3>
-    <p>Provider API keys should never sit in plaintext, even in a database only the team can reach. Use envelope encryption: a master key held in a KMS (AWS KMS, GCP KMS, or HashiCorp Vault) encrypts each provider key before it's written, and the app decrypts on read via a KMS call rather than reading a stored key directly. A database leak alone then doesn't leak provider credentials.</p>
+    <h3>Why credentials are a vault, not a plaintext column</h3>
+    <p>Provider and tool secrets are never stored in plaintext. <code>vault_credentials</code> holds them encrypted (envelope encryption via a KMS — AWS KMS, GCP KMS, or HashiCorp Vault), and the running system injects them into outbound requests <em>at egress</em> rather than handing them to the container (<a href="#tools-processing">§08</a>). A database leak alone then doesn't leak credentials, and the sandbox never holds a key it could exfiltrate.</p>
 
     <div class="callout warn">
-      <strong>Add later, not now:</strong> an index on <code>(deployment_id, started_at)</code> on <code>sessions</code> as soon as the monitoring view filters by deployment and time range — which will be almost immediately; a <code>team_members</code> join table with roles once more than one permission level is needed; a dedicated vector store for <code>memories</code> only once pgvector recall latency or index size becomes the bottleneck; per-tool usage counters once you need to rank tools by adoption rather than just list them.
+      <strong>Add later, not now:</strong> an index on <code>(deployment_id, started_at)</code> on <code>sessions</code> as soon as the monitoring view filters by deployment and time range — which will be almost immediately; a <code>team_members</code> join table with roles once more than one permission level is needed; a dedicated vector store for <code>memories</code> only once pgvector recall becomes the bottleneck; per-tool usage counters once you need to rank tools by adoption.
     </div>
   </section>
 
   <section id="scaling">
-    <h2><span class="num">12</span>Scaling notes</h2>
+    <h2><span class="num">13</span>Scaling notes</h2>
     <p>In rough order of when each becomes a real problem:</p>
     <ol>
       <li><strong>Trace volume overwhelming the primary database</strong> — mitigated by keeping <code>session_events</code> as its own table from the start, migrating to ClickHouse or partitioned Postgres when volume demands it.</li>
       <li><strong>Long-running agent runs holding worker capacity</strong> — mitigated by scaling workers against queue depth and setting per-run timeouts.</li>
+      <li><strong>Context windows filling on long sessions</strong> — mitigated by compaction and context editing inside the run, before the model hits its limit (<a href="#memory-context">§10</a>).</li>
       <li><strong>Provider rate limits cascading into failures</strong> — mitigated by the queue plus per-provider concurrency caps inside the adapter layer.</li>
       <li><strong>Memory recall slowing the session hot path</strong> — mitigated by an embedding index in pgvector, scope-filtering before ranking, and graduating to a dedicated vector store only when the index outgrows Postgres.</li>
-      <li><strong>Dreaming cost growing with session volume</strong> — mitigated by running it on idle against a bounded batch, using a cheaper model for consolidation, and processing per scope rather than over the whole corpus each pass.</li>
+      <li><strong>Dreaming cost growing with session volume</strong> — mitigated by running it on idle against a bounded batch, using a cheaper model, and processing per scope rather than over the whole corpus each pass.</li>
       <li><strong>Cost visibility lagging reality</strong> — mitigated by metering tokens at the adapter and streaming usage to the observability store in real time rather than in a nightly batch.</li>
     </ol>
   </section>
 
   <section class="part-divider" id="stack">
     <div class="part-label">Part four — implementation</div>
-    <h2><span class="num">13</span>Technology stack</h2>
+    <h2><span class="num">14</span>Technology stack</h2>
     <p class="lede">Matched to: internal tool, multi-provider, ship without overengineering.</p>
+
+    <div class="callout">
+      <strong>Build vs. buy the execution layer.</strong> Before standing up the queue, workers, and sandbox, weigh a hosted option — <strong>Anthropic's Managed Agents</strong> runs the agent loop and hosts a per-session container for you, so you'd only build the control plane and dashboard. The self-hosted build below is the right call when you need your own compute, a custom tool runtime, multi-provider routing, or data residency; the hosted path is the right call when you want to skip the entire teal column and ship sooner. The data model and concepts in this document apply either way.
+    </div>
 
     <table class="stack-table">
       <tr><th>Layer</th><th>Choice</th><th>Why</th></tr>
       <tr><td>Backend</td><td>TypeScript — Fastify or Hono</td><td>Lets the dashboard, API, and worker share types end to end; pairs with the Vercel AI SDK for the provider adapter.</td></tr>
       <tr><td>Provider adapter</td><td>Vercel AI SDK <span class="badge">or LiteLLM</span></td><td>Unified streaming + tool-calling across Anthropic, OpenAI, Google with minimal hand-written code; also serves embeddings for memory.</td></tr>
       <tr><td>Database</td><td>Postgres + Drizzle ORM</td><td>Maps directly to the schema above; Drizzle gives typed queries shared across apps in the monorepo.</td></tr>
-      <tr><td>Memory / vector</td><td>Postgres + pgvector <span class="badge">→ Qdrant later</span></td><td>Semantic recall without standing up a second datastore on day one; migrate to a dedicated vector DB only when the index outgrows Postgres.</td></tr>
-      <tr><td>Tool sandbox</td><td>gVisor / Firecracker <span class="badge">or E2B</span></td><td>Runs code tools in isolation with no ambient credentials — required before letting an agent execute anything.</td></tr>
+      <tr><td>Memory / vector</td><td>Postgres + pgvector <span class="badge">→ Qdrant later</span></td><td>Semantic recall without standing up a second datastore on day one.</td></tr>
+      <tr><td>Tool sandbox</td><td>gVisor / Firecracker <span class="badge">or E2B</span></td><td>Runs code tools in an isolated container with no ambient credentials — required before letting an agent execute anything.</td></tr>
       <tr><td>Queue / workers</td><td>BullMQ (Redis-backed)</td><td>Retries, backoff, and concurrency limits out of the box; repeatable jobs run the scheduled dreaming pass on the same infra.</td></tr>
       <tr><td>Frontend</td><td>Next.js + Tailwind + shadcn/ui</td><td>Fastest path to a clean internal console without custom design-system work.</td></tr>
       <tr><td>Auth</td><td>Clerk or Auth.js (NextAuth)</td><td>Team SSO/Google login without building auth from scratch.</td></tr>
-      <tr><td>Secrets</td><td>AWS Secrets Manager / KMS <span class="badge">or GCP equivalent</span></td><td>Envelope encryption for provider keys — required before storing any real credential.</td></tr>
+      <tr><td>Secrets / vault</td><td>AWS Secrets Manager / KMS <span class="badge">or GCP equivalent</span></td><td>Envelope encryption plus egress injection for provider and tool credentials.</td></tr>
       <tr><td>Hosting</td><td>Railway or Render <span class="badge">to start</span></td><td>Runs API, workers, and Postgres without managing infrastructure; graduate to ECS/Cloud Run only once usage justifies it.</td></tr>
       <tr><td>Observability</td><td>OpenTelemetry → Axiom / Better Stack</td><td>Cheap to instrument now, painful to retrofit later. Skip standing up Grafana/ClickHouse until volume demands it.</td></tr>
     </table>
@@ -629,18 +666,18 @@
   </section>
 
   <section id="repo-structure">
-    <h2><span class="num">14</span>Monorepo structure</h2>
+    <h2><span class="num">15</span>Monorepo structure</h2>
     <p>A monorepo fits because the dashboard, API, and worker share the same TypeScript types (Agent, Session, Deployment, Tool, Skill, Memory), and a schema change should update all three without juggling package versions across separate repos.</p>
     <p><strong>Tooling:</strong> Turborepo + pnpm workspaces. Turborepo caches builds and runs tasks in parallel across packages without the configuration overhead of Nx — appropriate weight for a repo that won't have 15+ packages. Skip Lerna; it's legacy.</p>
     <pre><code>agent-platform/
 ├── apps/
 │   ├── dashboard/      # Next.js — agent builder, session monitor, deploy UI
 │   ├── api/            # Fastify/Hono — control plane (agents, sessions, tools, skills, memory recall)
-│   └── worker/         # BullMQ — agent execution loop + scheduled dreaming job
+│   └── worker/         # BullMQ — agent loop + scheduled dreaming job
 ├── packages/
 │   ├── db/             # Drizzle schema + migrations + typed client
 │   ├── adapter/        # Provider adapter — unified LLM interface + embeddings
-│   ├── tools/          # Tool registry + runtime/sandbox + MCP gateway
+│   ├── tools/          # Tool registry + sandbox runtime + MCP gateway + permission policies
 │   ├── skills/         # Skill definitions, versioning, loading
 │   ├── memory/         # Recall + dreaming/consolidation logic
 │   ├── types/          # Shared TS types: Agent, Session, Tool, Skill, Memory, etc.
@@ -656,11 +693,11 @@ pnpm add -D typescript -w</code></pre>
   </section>
 
   <section id="sequencing">
-    <h2><span class="num">15</span>Build sequencing</h2>
-    <p>Build the provider adapter and the Agent/Session models first, and get one agent running end to end with live session traces visible. Tools come in this same first push — an agent with no tools is just a chat box, so the tool registry and the processing/sandbox layer are part of "one agent running end to end," not a later add-on.</p>
-    <p>Memory and dreaming come next, once the core loop works and there are real sessions to consolidate — you can't dream without session history to dream over. Recall is the half to ship first (it's read-only and immediately useful); the scheduled dreaming job follows once there's enough history that consolidation has something to chew on.</p>
+    <h2><span class="num">16</span>Build sequencing</h2>
+    <p>Build the provider adapter and the Agent/Session models first, and get one agent running end to end — through the full loop, with live session events visible in the dashboard. Tools come in this same first push: an agent with no tools is just a chat box, so the tool registry, the sandbox, and the permission gate are part of "one agent running end to end," not a later add-on.</p>
+    <p>Memory and dreaming come next, once the loop works and there are real sessions to consolidate — you can't dream without session history. Recall is the half to ship first (it's read-only and immediately useful); the scheduled dreaming job follows once there's enough history to chew on. In-session context management (compaction, context editing) lands alongside the loop as soon as runs get long enough to approach the context limit.</p>
     <p>Skills layer in once more than one agent needs the same capability — building the skills subsystem before that is premature abstraction. The builder UI and deployment come last.</p>
-    <p>Trying to build all of this fully in parallel tends to stall progress on all of it. The data model has to account for every capability from the start — hence pinned agent versions, join tables for tools and skills, and the memory tables in the schema above — but the build order doesn't have to match the data model's symmetry.</p>
+    <p>Trying to build all of this fully in parallel tends to stall progress on all of it. The data model has to account for every capability from the start — hence pinned agent versions, environments, join tables for tools and skills, and the memory tables in the schema above — but the build order doesn't have to match the data model's symmetry.</p>
   </section>
 
   <div class="footer-note">
