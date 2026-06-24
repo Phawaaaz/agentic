@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Agent Platform — Architecture &amp; Stack Reference</title>
+<style>
+  :root {
+    --ink: #1a1a18;
+    --ink-soft: #4a4944;
+    --ink-faint: #7a7972;
+    --line: #e0ddd3;
+    --bg: #fdfcfa;
+    --card: #ffffff;
+    --purple: #534AB7; --purple-bg: #EEEDFE; --purple-dark: #26215C;
+    --teal: #0F6E56; --teal-bg: #E1F5EE; --teal-dark: #04342C;
+    --coral: #993C1D; --coral-bg: #FAECE7; --coral-dark: #4A1B0C;
+    --amber: #854F0B; --amber-bg: #FAEEDA; --amber-dark: #412402;
+    --blue: #185FA5; --blue-bg: #E6F1FB; --blue-dark: #042C53;
+    --code-bg: #2C2C2A;
+    --code-text: #e8e6df;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    margin: 0;
+    line-height: 1.65;
+  }
+  .page {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 64px 40px 120px;
+  }
+  .cover {
+    border-bottom: 3px solid var(--ink);
+    padding-bottom: 32px;
+    margin-bottom: 48px;
+  }
+  .cover .label {
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 12px;
+  }
+  .cover h1 {
+    font-size: 36px;
+    font-weight: 600;
+    margin: 0 0 12px;
+    letter-spacing: -0.01em;
+  }
+  .cover .sub {
+    font-size: 17px;
+    color: var(--ink-soft);
+    max-width: 640px;
+  }
+  .cover .meta {
+    margin-top: 24px;
+    font-size: 13px;
+    color: var(--ink-faint);
+  }
+  nav.toc {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 24px 28px;
+    margin-bottom: 56px;
+  }
+  nav.toc h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-faint);
+    margin: 0 0 14px;
+    font-weight: 600;
+  }
+  nav.toc ol {
+    margin: 0;
+    padding-left: 22px;
+    columns: 2;
+    column-gap: 32px;
+  }
+  nav.toc li { margin-bottom: 8px; font-size: 14.5px; break-inside: avoid; }
+  nav.toc a { color: var(--ink); text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+
+  section { margin-bottom: 56px; }
+  section.part-divider {
+    margin: 72px 0 40px;
+    padding-top: 32px;
+    border-top: 1px solid var(--line);
+  }
+  .part-label {
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--purple);
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  h2 {
+    font-size: 24px;
+    font-weight: 600;
+    margin: 0 0 8px;
+    letter-spacing: -0.01em;
+    scroll-margin-top: 20px;
+  }
+  h2 .num { color: var(--ink-faint); font-weight: 400; margin-right: 8px; }
+  h3 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 28px 0 10px;
+    scroll-margin-top: 20px;
+  }
+  p { margin: 0 0 14px; color: var(--ink); font-size: 15.5px; }
+  .lede {
+    font-size: 16px;
+    color: var(--ink-soft);
+    margin-bottom: 24px;
+  }
+  ul, ol { margin: 0 0 16px; padding-left: 22px; font-size: 15.5px; }
+  li { margin-bottom: 6px; }
+  code {
+    font-family: "SF Mono", Consolas, Monaco, monospace;
+    background: #efece3;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 13.5px;
+    color: #5a2f0e;
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-text);
+    padding: 18px 20px;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.55;
+    margin: 16px 0 20px;
+  }
+  pre code {
+    background: none;
+    color: inherit;
+    padding: 0;
+    font-size: inherit;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0 24px;
+    font-size: 14.5px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  th {
+    font-weight: 600;
+    color: var(--ink-soft);
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border-bottom: 2px solid var(--ink);
+  }
+  tr:last-child td { border-bottom: none; }
+
+  .callout {
+    border-left: 3px solid var(--purple);
+    background: var(--purple-bg);
+    padding: 14px 20px;
+    border-radius: 0 8px 8px 0;
+    margin: 18px 0 22px;
+    font-size: 14.5px;
+    color: var(--purple-dark);
+  }
+  .callout strong { color: var(--purple-dark); }
+  .callout.warn { border-left-color: var(--coral); background: var(--coral-bg); color: var(--coral-dark); }
+  .callout.warn strong { color: var(--coral-dark); }
+
+  .grid-cards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin: 16px 0 24px;
+  }
+  .card {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px;
+    background: var(--card);
+  }
+  .card .tag {
+    display: inline-block;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 5px;
+    margin-bottom: 8px;
+  }
+  .card h4 { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+  .card p { margin: 0; font-size: 13.5px; color: var(--ink-soft); }
+  .tag.purple { background: var(--purple-bg); color: var(--purple-dark); }
+  .tag.teal { background: var(--teal-bg); color: var(--teal-dark); }
+  .tag.coral { background: var(--coral-bg); color: var(--coral-dark); }
+  .tag.amber { background: var(--amber-bg); color: var(--amber-dark); }
+  .tag.blue { background: var(--blue-bg); color: var(--blue-dark); }
+
+  .arch-diagram {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 24px;
+    background: var(--card);
+    margin: 20px 0 28px;
+  }
+  .tier {
+    margin-bottom: 18px;
+  }
+  .tier-label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-faint);
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+  .tier-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .box {
+    flex: 1;
+    min-width: 140px;
+    border-radius: 8px;
+    padding: 12px 14px;
+    border: 1px solid;
+  }
+  .box.gray { background: #F1EFE8; border-color: #B4B2A9; }
+  .box.blue { background: var(--blue-bg); border-color: #85B7EB; }
+  .box.purple { background: var(--purple-bg); border-color: #AFA9EC; }
+  .box.teal { background: var(--teal-bg); border-color: #5DCAA5; }
+  .box.coral { background: var(--coral-bg); border-color: #F0997B; }
+  .box.amber { background: var(--amber-bg); border-color: #EF9F27; }
+  .box .bt { font-size: 13.5px; font-weight: 600; margin-bottom: 2px; }
+  .box .bs { font-size: 12px; color: var(--ink-soft); }
+  .arrow-down {
+    text-align: center;
+    color: var(--ink-faint);
+    font-size: 18px;
+    margin: 4px 0;
+  }
+
+  .stack-table tr td:first-child { font-weight: 600; white-space: nowrap; }
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--teal-bg);
+    color: var(--teal-dark);
+    font-weight: 600;
+    margin-left: 6px;
+  }
+
+  .footer-note {
+    margin-top: 80px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+    color: var(--ink-faint);
+  }
+
+  @media print {
+    body { background: white; }
+    .page { padding: 20px; }
+    section { page-break-inside: avoid; }
+  }
+
+  @media (max-width: 640px) {
+    .page { padding: 32px 20px 80px; }
+    nav.toc ol { columns: 1; }
+    .grid-cards { grid-template-columns: 1fr; }
+    .tier-row { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="cover">
+    <div class="label">Internal engineering reference</div>
+    <h1>AI agent management platform</h1>
+    <div class="sub">Architecture, data model, and technology stack for an internal tool to manage agents, sessions, and deployments across multiple LLM providers.</div>
+    <div class="meta">Scope: team-internal tool · Multi-provider · Prepared June 2026</div>
+  </div>
+
+  <nav class="toc">
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#overview">Overview &amp; goals</a></li>
+      <li><a href="#core-concepts">Core concepts: agent, session, deployment</a></li>
+      <li><a href="#system-architecture">System architecture</a></li>
+      <li><a href="#control-plane">The control plane</a></li>
+      <li><a href="#execution-layer">The execution layer</a></li>
+      <li><a href="#provider-adapter">The provider adapter</a></li>
+      <li><a href="#data-layer">The data layer</a></li>
+      <li><a href="#data-model">Data model &amp; schema</a></li>
+      <li><a href="#scaling">Scaling notes</a></li>
+      <li><a href="#stack">Technology stack</a></li>
+      <li><a href="#repo-structure">Monorepo structure</a></li>
+      <li><a href="#sequencing">Build sequencing</a></li>
+    </ol>
+  </nav>
+
+  <section id="overview">
+    <h2><span class="num">01</span>Overview &amp; goals</h2>
+    <p class="lede">A control plane for AI agents: a single place for the team to define agents, run and observe sessions, and deploy agents as callable endpoints — independent of which LLM provider sits underneath.</p>
+    <div class="grid-cards">
+      <div class="card">
+        <span class="tag purple">Scope</span>
+        <h4>Team-internal tool</h4>
+        <p>Built for one engineering team, not external customers. No multi-tenant billing or public sign-up.</p>
+      </div>
+      <div class="card">
+        <span class="tag teal">Providers</span>
+        <h4>Multi-provider by design</h4>
+        <p>Anthropic, OpenAI, Google, and self-hosted models all sit behind one internal interface.</p>
+      </div>
+      <div class="card">
+        <span class="tag coral">Pillars</span>
+        <h4>Agents, sessions, deployments</h4>
+        <p>Three co-equal surfaces: build agents, observe runs, ship agents as endpoints.</p>
+      </div>
+      <div class="card">
+        <span class="tag amber">Posture</span>
+        <h4>Built to scale, not over-built</h4>
+        <p>Stateless services and an upgrade path for storage — without day-one infrastructure most teams don't need yet.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="core-concepts">
+    <h2><span class="num">02</span>Core concepts</h2>
+    <p>Four entities form the backbone of the system. Understanding how they relate is the key to everything that follows.</p>
+
+    <h3>Agent</h3>
+    <p>The definition or template. Holds a name, system prompt, model configuration (provider, model string, temperature, max tokens), and tool/MCP bindings. Agents themselves never change — they exist only as an identity that versions attach to.</p>
+
+    <h3>Agent version</h3>
+    <p>Every edit to an agent's configuration creates a new immutable version rather than overwriting the existing one. Versions are append-only: once a version has been used by any session or deployment, it is never modified. This is the single most important design decision in the system — it means a config change can never silently alter the behavior of something already running in production.</p>
+
+    <h3>Session</h3>
+    <p>A runtime instance of an agent version handling one conversation or task. Holds status (active, idle, completed, failed), full message/event history, token usage, and cost. This is the unit of observability — almost everything in the monitoring UI is a view over sessions.</p>
+
+    <h3>Deployment</h3>
+    <p>Binds a specific agent version to an environment (dev, staging, prod) and exposes it as a stable, callable endpoint. Because deployments pin to a version rather than to "the agent" in general, promoting a new version or rolling back is just repointing one foreign key.</p>
+
+    <div class="callout">
+      <strong>Why versioning matters more than it seems to at first.</strong> Without it, editing an agent's prompt changes the behavior of every session and deployment using that agent immediately and silently. With it, you always know exactly which prompt and model configuration produced any given session, and rolling back a bad change is a one-line operation instead of an incident.
+    </div>
+  </section>
+
+  <section class="part-divider" id="system-architecture">
+    <div class="part-label">Part two — architecture</div>
+    <h2><span class="num">03</span>System architecture</h2>
+    <p class="lede">The system is organized into five tiers. Each tier scales independently, which is what makes the platform able to grow without a rewrite.</p>
+
+    <div class="arch-diagram">
+      <div class="tier">
+        <div class="tier-label">Clients</div>
+        <div class="tier-row">
+          <div class="box gray"><div class="bt">Dashboard UI</div><div class="bs">Next.js console</div></div>
+          <div class="box gray"><div class="bt">Internal services</div><div class="bs">call deployed agents</div></div>
+        </div>
+      </div>
+      <div class="arrow-down">↓</div>
+      <div class="tier">
+        <div class="tier-label">Edge</div>
+        <div class="tier-row">
+          <div class="box blue" style="flex:1 1 100%"><div class="bt">API gateway</div><div class="bs">auth, rate limiting, routing</div></div>
+        </div>
+      </div>
+      <div class="arrow-down">↓</div>
+      <div class="tier">
+        <div class="tier-label">Control plane — stateless, horizontally scaled</div>
+        <div class="tier-row">
+          <div class="box purple"><div class="bt">Agent service</div><div class="bs">definitions, versions</div></div>
+          <div class="box purple"><div class="bt">Session service</div><div class="bs">runtime, history</div></div>
+          <div class="box purple"><div class="bt">Deploy service</div><div class="bs">environments, endpoints</div></div>
+          <div class="box purple"><div class="bt">Auth / RBAC</div><div class="bs">team scoping</div></div>
+        </div>
+        <div class="tier-row" style="margin-top:10px">
+          <div class="box purple"><div class="bt">Secrets / vault</div><div class="bs">encrypted provider keys</div></div>
+          <div class="box purple"><div class="bt">Observability</div><div class="bs">traces, metrics, cost</div></div>
+        </div>
+      </div>
+      <div class="arrow-down">↓</div>
+      <div class="tier">
+        <div class="tier-label">Agent execution layer — queue + worker pool</div>
+        <div class="tier-row">
+          <div class="box teal"><div class="bt">Task queue</div><div class="bs">Redis / SQS</div></div>
+          <div class="box teal"><div class="bt">Agent workers</div><div class="bs">run loop, tool calls</div></div>
+          <div class="box teal"><div class="bt">Provider adapter</div><div class="bs">unified LLM interface</div></div>
+        </div>
+        <div class="tier-row" style="margin-top:10px">
+          <div class="box amber" style="flex:1 1 100%"><div class="bt">Anthropic · OpenAI · Google · self-hosted</div><div class="bs">external model providers</div></div>
+        </div>
+      </div>
+      <div class="arrow-down">↓</div>
+      <div class="tier">
+        <div class="tier-label">Data layer</div>
+        <div class="tier-row">
+          <div class="box coral"><div class="bt">Postgres</div><div class="bs">agents, sessions, deployments</div></div>
+          <div class="box coral"><div class="bt">ClickHouse (later)</div><div class="bs">session traces, logs</div></div>
+          <div class="box coral"><div class="bt">Object store</div><div class="bs">artifacts, files</div></div>
+        </div>
+      </div>
+    </div>
+
+    <p>Requests enter through the gateway, which handles authentication and rate limiting before reaching the control plane. The control plane manages everything except the actual model calls — those are handed off to the execution layer, which runs asynchronously against a queue. This separation is the architectural decision that does the most work: it means heavy, slow agent runs never block the fast API surface the dashboard depends on.</p>
+  </section>
+
+  <section id="control-plane">
+    <h2><span class="num">04</span>The control plane</h2>
+    <p>The control plane is a set of stateless services — agent, session, deploy, and auth — that hold no in-memory state between requests. Everything persists to Postgres or the cache immediately. This is what makes scaling trivial: when traffic grows, you add replicas behind the gateway. No sticky sessions, no coordination between instances.</p>
+    <ul>
+      <li><strong>Agent service</strong> — CRUD for agent definitions and versions. Enforces the append-only versioning rule.</li>
+      <li><strong>Session service</strong> — creates sessions, serves session history and live status to the dashboard.</li>
+      <li><strong>Deploy service</strong> — promotes an agent version to an environment, manages the stable endpoint mapping.</li>
+      <li><strong>Auth / RBAC</strong> — team membership and role scoping (who can edit vs. only view).</li>
+      <li><strong>Secrets / vault</strong> — encrypted storage and retrieval of provider API keys.</li>
+      <li><strong>Observability</strong> — ingests traces, metrics, and per-session cost data for the monitoring views.</li>
+    </ul>
+  </section>
+
+  <section id="execution-layer">
+    <h2><span class="num">05</span>The execution layer</h2>
+    <p>Agent runs — the loop of calling a model, executing a tool, calling the model again — happen in a separate worker pool fed by a queue, deliberately apart from the API servers.</p>
+    <p>This separation matters because agent runs are slow and bursty: a single run can take minutes and involve many model calls, while API requests need to return in milliseconds. Running both in the same process means one heavy agent run starves the dashboard. Splitting them lets the worker pool scale against queue depth, independent of API traffic.</p>
+    <p>The queue also provides durability for free. If a worker crashes mid-run, the task returns to the queue and another worker picks it up. For a multi-provider system this matters doubly, since provider rate limits and outages are routine — the queue absorbs them instead of surfacing them as user-facing failures.</p>
+  </section>
+
+  <section id="provider-adapter">
+    <h2><span class="num">06</span>The provider adapter</h2>
+    <p>Everything above this layer speaks one internal interface. Only the adapter knows that Anthropic streams differently from OpenAI, that tool-call formats differ between providers, or that token counting works differently per model family.</p>
+    <pre><code>interface LLMAdapter {
+  stream(messages, config) -&gt; AsyncIterator&lt;Chunk&gt;
+  countTokens(messages) -&gt; number
+  toolFormat(tools) -&gt; ProviderTools
+}</code></pre>
+    <p>Concentrating provider-specific knowledge in one place means adding a new provider is a contained change to one layer, not a refactor spread across the codebase.</p>
+    <div class="callout">
+      <strong>Build vs. buy.</strong> Writing every adapter by hand gives maximum control but costs real time. A normalizing gateway — <strong>LiteLLM</strong> (proxy giving every provider an OpenAI-compatible API) or the <strong>Vercel AI SDK</strong> (TypeScript, unified streaming and tool calling) — gets the same abstraction with fallbacks, retries, and spend tracking built in. For a team-internal tool, starting on one of these saves weeks; hand-written adapters can replace it later if you outgrow it.
+    </div>
+  </section>
+
+  <section id="data-layer">
+    <h2><span class="num">07</span>The data layer</h2>
+    <p>The data layer splits by access pattern, which is the detail most teams get wrong until volume forces the issue.</p>
+    <p>Entity data — agents, sessions, deployments — is low-volume, relational, and needs transactions: that's Postgres. Session <em>traces</em> — every message, token count, latency figure, tool call — are high-volume, append-only, and queried analytically ("cost per agent this week"). Forcing both into the same table works until trace volume swamps the database and dashboard queries slow down.</p>
+    <p>The fix is to keep traces in their own table from day one (<code>session_events</code>, see schema below) so the write pattern is already isolated, then migrate that table to a columnar store like ClickHouse — or partition it within Postgres — once volume actually demands it. You don't need ClickHouse on day one; you need the table boundary to already exist so the migration is a data move, not a redesign.</p>
+  </section>
+
+  <section class="part-divider" id="data-model">
+    <div class="part-label">Part three — data model</div>
+    <h2><span class="num">08</span>Data model &amp; schema</h2>
+    <p class="lede">Seven tables: four core entities, plus credentials, trace events, and team ownership.</p>
+
+    <table>
+      <tr><th>Table</th><th>Purpose</th><th>Key columns</th></tr>
+      <tr><td>teams</td><td>Top-level ownership boundary</td><td>id, name, created_at</td></tr>
+      <tr><td>agents</td><td>Identity only — name and slug, never edited</td><td>id, team_id, name, slug</td></tr>
+      <tr><td>agent_versions</td><td>Immutable config snapshot per edit</td><td>id, agent_id, version_number, system_prompt, provider, model, tool_config, model_params</td></tr>
+      <tr><td>deployments</td><td>Binds a version to an environment + endpoint</td><td>id, agent_version_id, environment, endpoint_slug, status</td></tr>
+      <tr><td>sessions</td><td>One runtime conversation/task instance</td><td>id, agent_version_id, deployment_id, status, total_tokens, cost_usd</td></tr>
+      <tr><td>session_events</td><td>Append-only trace of every message/tool call</td><td>id, session_id, event_type, payload, tokens, latency_ms</td></tr>
+      <tr><td>provider_credentials</td><td>Encrypted provider API keys, scoped to team</td><td>id, team_id, provider, encrypted_key</td></tr>
+    </table>
+
+    <h3>Why agents and agent_versions are split</h3>
+    <p><code>agents</code> is an identity row that never changes. All real configuration lives in <code>agent_versions</code>, where every edit inserts a new row. A deployment's <code>agent_version_id</code> always points at something immutable — promoting a version is changing one foreign key, and rolling back is pointing it at the previous one.</p>
+
+    <h3>Why sessions carries both agent_version_id and deployment_id</h3>
+    <p>A session can originate from two paths: someone testing an agent directly in the builder (no deployment), or a deployed endpoint being invoked (has a deployment). Making <code>deployment_id</code> nullable lets one table serve both paths, so the session-monitoring view never needs a union query across two tables.</p>
+
+    <h3>Why session_events is its own table, not a JSON column on sessions</h3>
+    <p>It's tempting to add a <code>messages jsonb</code> column on <code>sessions</code> and append to it. Avoid this. Postgres rewrites the entire JSON blob on every append, which slows down as conversations grow, and a blob can't be queried at the event level — exactly the query you'll want once there's real usage ("show every failed tool call this week"). A separate table with an <code>event_type</code> column (message, tool_call, tool_result, error) keeps writes small and queryable, and is also the table to move into ClickHouse first when volume grows.</p>
+
+    <h3>Why provider_credentials stores encrypted_key, never a raw key</h3>
+    <p>Provider API keys should never sit in plaintext, even in a database only the team can reach. Use envelope encryption: a master key held in a KMS (AWS KMS, GCP KMS, or HashiCorp Vault) encrypts each provider key before it's written, and the app decrypts on read via a KMS call rather than reading a stored key directly. A database leak alone then doesn't leak provider credentials.</p>
+
+    <div class="callout warn">
+      <strong>Add later, not now:</strong> a dedicated tool/MCP-binding table once agents bind to many external tools (a JSON column on <code>agent_versions</code> is fine until you need to query "which agents use this tool"); a <code>team_members</code> join table with roles once more than one permission level is needed; an index on <code>(deployment_id, started_at)</code> on <code>sessions</code> as soon as the monitoring view filters by deployment and time range — which will be almost immediately.
+    </div>
+  </section>
+
+  <section id="scaling">
+    <h2><span class="num">09</span>Scaling notes</h2>
+    <p>In rough order of when each becomes a real problem:</p>
+    <ol>
+      <li><strong>Trace volume overwhelming the primary database</strong> — mitigated by keeping <code>session_events</code> as its own table from the start, migrating to ClickHouse or partitioned Postgres when volume demands it.</li>
+      <li><strong>Long-running agent runs holding worker capacity</strong> — mitigated by scaling workers against queue depth and setting per-run timeouts.</li>
+      <li><strong>Provider rate limits cascading into failures</strong> — mitigated by the queue plus per-provider concurrency caps inside the adapter layer.</li>
+      <li><strong>Cost visibility lagging reality</strong> — mitigated by metering tokens at the adapter and streaming usage to the observability store in real time rather than in a nightly batch.</li>
+    </ol>
+  </section>
+
+  <section class="part-divider" id="stack">
+    <div class="part-label">Part four — implementation</div>
+    <h2><span class="num">10</span>Technology stack</h2>
+    <p class="lede">Matched to: internal tool, multi-provider, ship without overengineering.</p>
+
+    <table class="stack-table">
+      <tr><th>Layer</th><th>Choice</th><th>Why</th></tr>
+      <tr><td>Backend</td><td>TypeScript — Fastify or Hono</td><td>Lets the dashboard, API, and worker share types end to end; pairs with the Vercel AI SDK for the provider adapter.</td></tr>
+      <tr><td>Provider adapter</td><td>Vercel AI SDK <span class="badge">or LiteLLM</span></td><td>Unified streaming + tool-calling across Anthropic, OpenAI, Google with minimal hand-written code.</td></tr>
+      <tr><td>Database</td><td>Postgres + Drizzle ORM</td><td>Maps directly to the schema above; Drizzle gives typed queries shared across apps in the monorepo.</td></tr>
+      <tr><td>Queue / workers</td><td>BullMQ (Redis-backed)</td><td>Retries, backoff, and concurrency limits out of the box — exactly what the execution layer needs.</td></tr>
+      <tr><td>Frontend</td><td>Next.js + Tailwind + shadcn/ui</td><td>Fastest path to a clean internal console without custom design-system work.</td></tr>
+      <tr><td>Auth</td><td>Clerk or Auth.js (NextAuth)</td><td>Team SSO/Google login without building auth from scratch.</td></tr>
+      <tr><td>Secrets</td><td>AWS Secrets Manager / KMS <span class="badge">or GCP equivalent</span></td><td>Envelope encryption for provider keys — required before storing any real credential.</td></tr>
+      <tr><td>Hosting</td><td>Railway or Render <span class="badge">to start</span></td><td>Runs API, workers, and Postgres without managing infrastructure; graduate to ECS/Cloud Run only once usage justifies it.</td></tr>
+      <tr><td>Observability</td><td>OpenTelemetry → Axiom / Better Stack</td><td>Cheap to instrument now, painful to retrofit later. Skip standing up Grafana/ClickHouse until volume demands it.</td></tr>
+    </table>
+
+    <div class="callout warn">
+      <strong>The most common overengineering trap at this stage</strong> is reaching for Kubernetes or a full ClickHouse + Grafana stack on day one. Both have clear upgrade paths from the simpler choices above — start simple, migrate the specific piece that hits its ceiling, not the whole stack at once.
+    </div>
+  </section>
+
+  <section id="repo-structure">
+    <h2><span class="num">11</span>Monorepo structure</h2>
+    <p>A monorepo fits because the dashboard, API, and worker share the same TypeScript types (Agent, Session, Deployment), and a schema change should update all three without juggling package versions across separate repos.</p>
+    <p><strong>Tooling:</strong> Turborepo + pnpm workspaces. Turborepo caches builds and runs tasks in parallel across packages without the configuration overhead of Nx — appropriate weight for a repo that won't have 15+ packages. Skip Lerna; it's legacy.</p>
+    <pre><code>agent-platform/
+├── apps/
+│   ├── dashboard/      # Next.js — agent builder, session monitor, deploy UI
+│   ├── api/            # Fastify/Hono — control plane (agents, sessions, deployments, auth)
+│   └── worker/         # BullMQ worker — agent execution loop
+├── packages/
+│   ├── db/             # Drizzle schema + migrations + typed client
+│   ├── adapter/        # Provider adapter — unified LLM interface
+│   ├── types/          # Shared TS types: Agent, Session, Deployment, etc.
+│   └── ui/             # Shared shadcn/ui components
+├── turbo.json
+├── pnpm-workspace.yaml
+└── package.json</code></pre>
+    <p><code>packages/db</code> is the package every app touches — the dashboard reads sessions for monitoring, the API writes agents and deployments, the worker writes session_events. Defining the schema once means a column rename surfaces as a type error everywhere it's used, instead of a runtime bug discovered later.</p>
+    <p><code>packages/adapter</code> stays separate from <code>apps/worker</code> so provider behavior can be unit-tested (mocking Anthropic vs. OpenAI responses) without spinning up the queue, and so the API can call it directly too — for example, a "test this agent" button that shouldn't need the full async worker path.</p>
+    <pre><code>pnpm dlx create-turbo@latest agent-platform
+cd agent-platform
+pnpm add -D typescript -w</code></pre>
+  </section>
+
+  <section id="sequencing">
+    <h2><span class="num">12</span>Build sequencing</h2>
+    <p>Build the provider adapter and the Agent/Session models first, and get one agent running end to end with live session traces visible. That alone is already useful to the team. Layer the builder UI next, then deployment last.</p>
+    <p>Trying to build all three pillars fully in parallel tends to stall progress on all of them. The data model has to account for all three from the start — hence pinned agent versions in the schema above — but the build order doesn't have to match the data model's symmetry.</p>
+  </section>
+
+  <div class="footer-note">
+    Internal reference document — AI agent management platform. Architecture, schema, and stack as discussed and refined through design review.
+  </div>
+
+</div>
+</body>
+</html>
